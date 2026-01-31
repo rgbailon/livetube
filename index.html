@@ -216,7 +216,7 @@
             </div>
             
             <!-- API Keys List -->
-            <div id="apiKeysList" class="mb-4 max-h-40 overflow-y-auto space-y-2">
+            <div id="apiKeysList" class="mb-4 max-h-64 overflow-y-auto space-y-3 pr-1">
                 <!-- Keys will be listed here -->
             </div>
             
@@ -240,9 +240,24 @@
             </div>
             
             <!-- Key Count Info -->
-            <div id="keyCountInfo" class="text-center text-sm text-gray-400 mb-4">
+            <div id="keyCountInfo" class="text-center text-sm text-gray-400 mb-2">
                 <span id="keyCount">0</span> API key(s) added
                 <span class="text-yellow-500 ml-2" id="quotaWarning" style="display: none;">• Auto-switch on quota exceeded</span>
+            </div>
+            
+            <!-- Total Quota Stats -->
+            <div id="totalQuotaStats" class="text-center mb-2 p-2 bg-gray-700/50 rounded-lg">
+                <div class="text-xs text-gray-400">
+                    <span class="font-medium text-white">0</span> total units used today
+                </div>
+            </div>
+            
+            <!-- Quota Reset Info -->
+            <div class="flex items-center justify-center gap-2 mb-4">
+                <span class="text-xs text-gray-500">Quota resets daily at midnight PT</span>
+                <button onclick="resetQuotaStats()" class="text-xs text-blue-400 hover:text-blue-300 underline" title="Reset quota tracking (for testing)">
+                    Reset Stats
+                </button>
             </div>
             
             <!-- Validate All Button -->
@@ -496,6 +511,122 @@
         let currentKeyIndex = parseInt(localStorage.getItem('youtube_current_key_index') || '0');
         let failedKeys = new Set(); // Track keys that failed in current session
         
+        // Quota tracking per API key
+        // YouTube API costs: search.list = 100 units, videos.list = 1 unit, channels.list = 1 unit
+        // Daily quota limit is typically 10,000 units
+        let apiQuotaUsage = JSON.parse(localStorage.getItem('youtube_api_quota_usage') || '{}');
+        const DAILY_QUOTA_LIMIT = 10000;
+        
+        // Check if quota should be reset (new day)
+        function checkQuotaReset() {
+            const today = new Date().toDateString();
+            const lastResetDate = localStorage.getItem('youtube_quota_reset_date');
+            
+            if (lastResetDate !== today) {
+                // Reset all quota usage for new day
+                apiQuotaUsage = {};
+                localStorage.setItem('youtube_api_quota_usage', JSON.stringify(apiQuotaUsage));
+                localStorage.setItem('youtube_quota_reset_date', today);
+                failedKeys.clear();
+            }
+        }
+        
+        // Track quota usage for an API key
+        function trackQuotaUsage(apiKey, endpoint) {
+            const costs = {
+                'search': 100,
+                'videos': 1,
+                'channels': 1
+            };
+            
+            const cost = costs[endpoint] || 1;
+            
+            if (!apiQuotaUsage[apiKey]) {
+                apiQuotaUsage[apiKey] = { used: 0, calls: { search: 0, videos: 0, channels: 0 }, lastUpdated: Date.now() };
+            }
+            
+            apiQuotaUsage[apiKey].used += cost;
+            apiQuotaUsage[apiKey].calls[endpoint] = (apiQuotaUsage[apiKey].calls[endpoint] || 0) + 1;
+            apiQuotaUsage[apiKey].lastUpdated = Date.now();
+            
+            localStorage.setItem('youtube_api_quota_usage', JSON.stringify(apiQuotaUsage));
+            
+            // Update UI if modal is open
+            updateQuotaDisplay();
+        }
+        
+        // Get quota info for an API key
+        function getQuotaInfo(apiKey) {
+            const usage = apiQuotaUsage[apiKey] || { used: 0, calls: { search: 0, videos: 0, channels: 0 } };
+            const percentage = Math.min((usage.used / DAILY_QUOTA_LIMIT) * 100, 100);
+            const remaining = Math.max(DAILY_QUOTA_LIMIT - usage.used, 0);
+            
+            return {
+                used: usage.used,
+                remaining: remaining,
+                percentage: percentage,
+                calls: usage.calls,
+                limit: DAILY_QUOTA_LIMIT
+            };
+        }
+        
+        // Update quota display in modal
+        function updateQuotaDisplay() {
+            const modal = document.getElementById('apiModal');
+            if (modal.classList.contains('hidden')) return;
+            
+            apiKeys.forEach((key, index) => {
+                const quotaBar = document.getElementById(`quota-bar-${index}`);
+                const quotaText = document.getElementById(`quota-text-${index}`);
+                
+                if (quotaBar && quotaText) {
+                    const info = getQuotaInfo(key);
+                    quotaBar.style.width = `${info.percentage}%`;
+                    quotaText.textContent = `${info.used.toLocaleString()} / ${info.limit.toLocaleString()}`;
+                    
+                    // Update color based on usage
+                    quotaBar.className = quotaBar.className.replace(/bg-\w+-\d+/g, '');
+                    if (info.percentage >= 90) {
+                        quotaBar.classList.add('bg-red-500');
+                    } else if (info.percentage >= 70) {
+                        quotaBar.classList.add('bg-yellow-500');
+                    } else {
+                        quotaBar.classList.add('bg-green-500');
+                    }
+                }
+            });
+            
+            // Update total stats
+            updateTotalQuotaStats();
+        }
+        
+        // Update total quota stats
+        function updateTotalQuotaStats() {
+            const totalStatsEl = document.getElementById('totalQuotaStats');
+            if (!totalStatsEl) return;
+            
+            let totalUsed = 0;
+            let totalCalls = { search: 0, videos: 0, channels: 0 };
+            
+            apiKeys.forEach(key => {
+                const usage = apiQuotaUsage[key] || { used: 0, calls: { search: 0, videos: 0, channels: 0 } };
+                totalUsed += usage.used;
+                totalCalls.search += usage.calls?.search || 0;
+                totalCalls.videos += usage.calls?.videos || 0;
+                totalCalls.channels += usage.calls?.channels || 0;
+            });
+            
+            totalStatsEl.innerHTML = `
+                <div class="text-xs text-gray-400">
+                    <span class="font-medium text-white">${totalUsed.toLocaleString()}</span> total units used today
+                    <span class="text-gray-500 ml-2">|</span>
+                    <span class="ml-2">🔍 ${totalCalls.search}</span>
+                    <span class="ml-2">📺 ${totalCalls.videos}</span>
+                    <span class="ml-2">📢 ${totalCalls.channels}</span>
+                </div>
+            `;
+        }
+        
         let currentCategory = null;
         let currentSearch = '';
         let liveVideos = new Map();
@@ -578,6 +709,16 @@
             
             const fullUrl = url.replace('{API_KEY}', apiKey);
             
+            // Determine endpoint type for quota tracking
+            let endpoint = 'videos';
+            if (url.includes('/search')) {
+                endpoint = 'search';
+            } else if (url.includes('/channels')) {
+                endpoint = 'channels';
+            } else if (url.includes('/videos')) {
+                endpoint = 'videos';
+            }
+            
             try {
                 const response = await fetch(fullUrl);
                 const data = await response.json();
@@ -593,6 +734,13 @@
                         errorMessage.includes('quota') ||
                         errorMessage.includes('limit')) {
                         
+                        // Mark this key as quota exceeded
+                        if (apiQuotaUsage[apiKey]) {
+                            apiQuotaUsage[apiKey].used = DAILY_QUOTA_LIMIT;
+                            localStorage.setItem('youtube_api_quota_usage', JSON.stringify(apiQuotaUsage));
+                            updateQuotaDisplay();
+                        }
+                        
                         console.warn(`API key ${currentKeyIndex + 1} quota exceeded, switching...`);
                         showToast(`API key ${currentKeyIndex + 1} quota exceeded, switching to next key...`, 'warning');
                         
@@ -603,6 +751,9 @@
                     
                     throw new Error(errorMessage);
                 }
+                
+                // Track successful API call quota usage
+                trackQuotaUsage(apiKey, endpoint);
                 
                 return data;
                 
@@ -631,8 +782,22 @@
             }, 3000);
         }
 
+        // Reset quota stats (for testing/debugging)
+        function resetQuotaStats() {
+            if (confirm('Reset all quota tracking stats? This only resets the local tracking, not the actual YouTube quota.')) {
+                apiQuotaUsage = {};
+                localStorage.setItem('youtube_api_quota_usage', JSON.stringify(apiQuotaUsage));
+                renderApiKeysList();
+                updateTotalQuotaStats();
+                showToast('Quota stats reset successfully', 'info');
+            }
+        }
+        
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
+            // Check if quota should be reset (new day)
+            checkQuotaReset();
+            
             renderCategories();
             renderApiKeysList();
             
@@ -668,6 +833,7 @@
             
             listEl.innerHTML = apiKeys.map((key, index) => {
                 const status = keyValidationStatus[key] || 'unknown';
+                const quotaInfo = getQuotaInfo(key);
                 let statusIcon = '';
                 let statusClass = 'bg-gray-600';
                 
@@ -685,18 +851,47 @@
                     statusClass = 'bg-blue-600';
                 }
                 
+                // Determine quota bar color
+                let quotaBarColor = 'bg-green-500';
+                if (quotaInfo.percentage >= 90) {
+                    quotaBarColor = 'bg-red-500';
+                } else if (quotaInfo.percentage >= 70) {
+                    quotaBarColor = 'bg-yellow-500';
+                }
+                
+                // Check if this is the active key
+                const isActive = index === currentKeyIndex;
+                
                 return `
-                <div class="flex items-center gap-2 p-2 bg-gray-700 rounded-lg group" data-key-index="${index}">
-                    <span class="w-6 h-6 flex items-center justify-center text-xs font-bold rounded-full ${statusClass}" title="${status}">
-                        ${statusIcon || (index + 1)}
-                    </span>
-                    <span class="flex-1 font-mono text-sm text-gray-300 truncate">${key.substring(0, 8)}...${key.substring(key.length - 4)}</span>
-                    <span class="text-xs text-gray-500 capitalize ${status === 'unknown' ? 'hidden' : ''}">${status}</span>
-                    <button onclick="removeApiKey(${index})" class="p-1 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition" title="Remove key">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                        </svg>
-                    </button>
+                <div class="p-3 bg-gray-700 rounded-lg group ${isActive ? 'ring-2 ring-blue-500' : ''}" data-key-index="${index}">
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="w-6 h-6 flex items-center justify-center text-xs font-bold rounded-full ${statusClass}" title="${status}">
+                            ${statusIcon || (index + 1)}
+                        </span>
+                        <span class="flex-1 font-mono text-sm text-gray-300 truncate">${key.substring(0, 8)}...${key.substring(key.length - 4)}</span>
+                        ${isActive ? '<span class="text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full">Active</span>' : ''}
+                        <span class="text-xs text-gray-500 capitalize ${status === 'unknown' ? 'hidden' : ''}">${status}</span>
+                        <button onclick="removeApiKey(${index})" class="p-1 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition" title="Remove key">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <!-- Quota Usage Bar -->
+                    <div class="mt-2">
+                        <div class="flex items-center justify-between text-xs text-gray-400 mb-1">
+                            <span>Quota Used</span>
+                            <span id="quota-text-${index}">${quotaInfo.used.toLocaleString()} / ${quotaInfo.limit.toLocaleString()}</span>
+                        </div>
+                        <div class="h-2 bg-gray-600 rounded-full overflow-hidden">
+                            <div id="quota-bar-${index}" class="h-full ${quotaBarColor} transition-all duration-300" style="width: ${quotaInfo.percentage}%"></div>
+                        </div>
+                        <div class="flex items-center justify-between text-xs text-gray-500 mt-1">
+                            <span>🔍 ${quotaInfo.calls?.search || 0} searches</span>
+                            <span>📺 ${quotaInfo.calls?.videos || 0} videos</span>
+                            <span>📢 ${quotaInfo.calls?.channels || 0} channels</span>
+                        </div>
+                    </div>
                 </div>
             `}).join('');
             
@@ -985,8 +1180,12 @@
             const startBtn = document.getElementById('startButton');
             const doneBtn = document.getElementById('doneButton');
             
+            // Check for quota reset before showing
+            checkQuotaReset();
+            
             modal.classList.remove('hidden');
             renderApiKeysList();
+            updateTotalQuotaStats();
             
             if (hasStartedWatching) {
                 // Returning user - show close button and done button
